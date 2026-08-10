@@ -123,3 +123,26 @@ def analyze_safetensors_memory(file_path):
 # 替换为你实际的 safetensors 文件路径
 model_path = "./cropped_model/model158_bit4.safetensors"
 analyze_safetensors_memory(model_path)
+
+from safetensors import safe_open
+
+def check_embedding_quant():
+    path = "./cropped_model/model158_bit4.safetensors"
+    print(f"正在读取: {path}\n")
+    
+    with safe_open(path, framework="pt", device="cpu") as f:
+        for k in f.keys():
+            # 只抓取 embed 和 lm_head 相关的层
+            if "embed" in k or "lm_head" in k:
+                t = f.get_tensor(k)
+                shape = str(list(t.shape))
+                dtype = str(t.dtype)
+                size_mb = t.numpy().nbytes / (1024 * 1024)
+                
+                print(f"🔑 Key: {k}")
+                print(f"   ├─ Dtype: {dtype}")
+                print(f"   ├─ Shape: {shape}")
+                print(f"   └─ Size : {size_mb:.2f} MB\n")
+
+if __name__ == "__main__":
+    check_embedding_quant()
