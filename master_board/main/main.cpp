@@ -25,6 +25,12 @@
 #include "struct.h"
 #include "embedding.h"
 
+//using spi
+#include "spi_bus.h"
+
+// lm_head
+#include "lm_head.h"
+
 // Global variable
 
 static const char *TAG = "TOKENIZER";
@@ -220,5 +226,56 @@ extern "C" void app_main(void)
     }
     printf("\n");
 
+    // test SPI line
+    ESP_LOGI("MAIN","init SPI master node");
+    if (spi_bus_init_node() != ESP_OK) {
+        ESP_LOGE("MAIN", "SPI master init fail!");
+        return;
+    }
+
+    size_t payload_size = emb_mod.hidden_size * sizeof(float);
+
+    ESP_LOGI("MAIN", "Transfering Token 0 with size: %u",payload_size);
+
+    esp_err_t err = spi_bus_send_frame(PKG_TYPE_X_MATRIX,s_matrix_X,payload_size);
+    if(err == ESP_OK) {
+        ESP_LOGI("MAIN", "SPI success!");
+    } else {
+        ESP_LOGE("MAIN", "SPI ERROR: %s", esp_err_to_name(err));
+    }
+    int64_t t5 = esp_timer_get_time();
+
+    //rev back data
+    SpiPkgType rx_type;
+    size_t rx_len = 0;
+
+    err = spi_bus_recv_frame(&rx_type, s_matrix_X, &rx_len);
+    int64_t t6 = esp_timer_get_time();
+
+    if (err == ESP_OK) {
+        ESP_LOGI("MAIN", "successfully receive matrix X: type: 0x%02X | length: %u bytes", rx_type, rx_len);
+        ESP_LOGI("MAIN", "transfer accross 3 nodes: %lld us", (t6 - t5));
+        // 打印验证 Node 算完回传回来的前 5 维数据
+        printf("Node 回传的向量前 5 维数据: ");
+        for (int k = 0; k < 5; ++k) {
+            printf("%.4f ", s_matrix_X[k]);
+        }
+        printf("\n");
+
+        int64_t t_lm_0 = esp_timer_get_time();
+        int next_token_id = lm_head_sample(&emb_mod, s_matrix_X, 0.0f);
+        int64_t t_lm_1 = esp_timer_get_time();
+
+        ESP_LOGI("MAIN", "LM head finish prediction used: %lld us",(t_lm_1 - t_lm_0));
+        ESP_LOGI("MAIN", "Predicted: %d", next_token_id);
+
+        if (next_token_id >= 0 && next_token_id < (int)s_header->vocab_size) {
+            const TokenEntry& entry = s_token_table[next_token_id];
+            printf("first token: %.*s\n", entry.length, s_string_pool + entry.offset);
+        }
+    
+    }else {
+        ESP_LOGE("MAIN", "SPI Recv ERROR: %s", esp_err_to_name(err));
+    }
 
 }

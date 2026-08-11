@@ -5,7 +5,7 @@
 #pragma pack(push, 1)
 
 // Header magic number "ESP3"
-struct BinHeader {
+struct __attribute__((packed)) BinHeader {
     char magic[4];
     uint32_t vocab_size; // vocab size
     uint32_t merge_count;
