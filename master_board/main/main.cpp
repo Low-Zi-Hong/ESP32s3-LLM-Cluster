@@ -17,6 +17,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include <string.h> // use for memcmp
+#include "driver/gpio.h"
 
 // use psram
 #include "esp_heap_caps.h"
@@ -32,6 +33,8 @@
 #include "lm_head.h"
 
 // Global variable
+#define RST_OTHER_PIN GPIO_NUM_1
+#define OTHER_READY_PIN GPIO_NUM_3
 
 static const char *TAG = "TOKENIZER";
 static spi_flash_mmap_handle_t s_token_map_handle;
@@ -45,6 +48,62 @@ static spi_flash_mmap_handle_t s_mmap_handle;
 
 // byte to id array
 static int s_byte_to_id[256];
+
+void init_control_gpio(void) {
+    gpio_reset_pin(RST_OTHER_PIN);
+    gpio_reset_pin(OTHER_READY_PIN);
+
+    gpio_set_direction(RST_OTHER_PIN, GPIO_MODE_OUTPUT);
+    gpio_set_direction(OTHER_READY_PIN, GPIO_MODE_INPUT);
+    gpio_set_pull_mode(OTHER_READY_PIN, GPIO_PULLDOWN_ONLY);
+
+    ESP_LOGI(TAG, "Resetting other esp...");
+    gpio_set_level(RST_OTHER_PIN, 1);
+    gpio_set_level(RST_OTHER_PIN, 0);
+    vTaskDelay(pdMS_TO_TICKS(50));
+    gpio_set_level(RST_OTHER_PIN, 1);
+
+    int timeout_ms = 2000; // 给它 2 秒时间变低
+    bool node_responded_low = false;
+
+    while (timeout_ms > 0) {
+        if (gpio_get_level(OTHER_READY_PIN) == 0) {
+            node_responded_low = true;
+            break; // 成功捕捉到低电平，顺利过关！
+        }
+        vTaskDelay(pdMS_TO_TICKS(10)); // 至少 10ms
+        timeout_ms -= 10;
+    }
+
+if (!node_responded_low) {
+        ESP_LOGW(TAG, "警告: Node 没有拉低 READY，可能 Node 正在从极早期 Bootloader 启动中...");
+    } else {
+        ESP_LOGI(TAG, "捕捉到 Node 已拉低 READY (进入 Boot 流程)...");
+    }
+
+    // 3. ⚠️ 关卡二：等待 READY 真正变高 (1) [核心死锁门禁]
+    ESP_LOGI(TAG, "等待 Node 加载模型及 SPI DMA 就绪 (等待 READY 变 1)...");
+    timeout_ms = 10000; // 10秒超时
+    bool node_is_ready = false;
+
+    while (timeout_ms > 0) {
+        if (gpio_get_level(OTHER_READY_PIN) == 1) {
+            node_is_ready = true;
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(10)); // 释放 CPU 给 IDLE0 自动喂狗！
+        timeout_ms -= 10;
+    }
+
+    // 🚨 逻辑熔断：如果 Node 没有拉高，必须强行报错并中止，绝对不能打出 READY！
+    if (!node_is_ready) {
+        ESP_LOGE(TAG, "致命错误: Node 加载超时 (未变高)，强行中止任务！");
+        return; // ⛔ 直接 return！绝对不让代码向下执行！
+    }
+
+    ESP_LOGI(TAG, "ALL NODE READY!!!");
+    
+}
 
 
 int lookup_merge_rule(uint16_t left, uint16_t right) {
@@ -128,6 +187,7 @@ size_t seq_to_str(TokenSeq result, char* out_buf, size_t max_buf_len){
 extern "C" void app_main(void)
 {
     printf("Hello world!\n");
+    init_control_gpio();
 
     //find partition
     const esp_partition_t *token_part = esp_partition_find_first(
@@ -237,7 +297,7 @@ extern "C" void app_main(void)
 
     ESP_LOGI("MAIN", "Transfering Token 0 with size: %u",payload_size);
 
-    esp_err_t err = spi_bus_send_frame(PKG_TYPE_X_MATRIX,s_matrix_X,payload_size);
+    esp_err_t err = spi_bus_send_frame(PKG_TYPE_X_MATRIX,s_matrix_X,payload_size,0);
     if(err == ESP_OK) {
         ESP_LOGI("MAIN", "SPI success!");
     } else {
@@ -248,8 +308,9 @@ extern "C" void app_main(void)
     //rev back data
     SpiPkgType rx_type;
     size_t rx_len = 0;
+    uint32_t currentpos = 0;
 
-    err = spi_bus_recv_frame(&rx_type, s_matrix_X, &rx_len);
+    err = spi_bus_recv_frame(&rx_type, s_matrix_X, &rx_len,&currentpos);
     int64_t t6 = esp_timer_get_time();
 
     if (err == ESP_OK) {
