@@ -78,8 +78,8 @@ extern "C" void app_main(void)
     init_work_led();
     kill_board_rgb(); // 关掉钛合金狗眼
 
-    float* buf_A = (float*)heap_caps_malloc(896 * sizeof(float), MALLOC_CAP_SPIRAM);
-    float* buf_B = (float*)heap_caps_malloc(896 * sizeof(float), MALLOC_CAP_SPIRAM);
+    float* buf_A = (float*)heap_caps_aligned_alloc(16,896 * sizeof(float), MALLOC_CAP_SPIRAM);
+    float* buf_B = (float*)heap_caps_aligned_alloc(16,896 * sizeof(float), MALLOC_CAP_SPIRAM);
 
     float* s_node_input_X = (float*)heap_caps_malloc(
         896 * sizeof(float), 

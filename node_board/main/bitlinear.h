@@ -36,3 +36,13 @@ esp_err_t bitlinear_init(LayerWeights* out_layer);
  * @param output_Y 输出特征向量 Y
  */
 void bitlinear_forward(const float* input_X, const LayerWeights* layer, float* output_Y);
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+float bitlinear_forward_asm(const float* x_vec, const uint8_t* packed_w_row, uint32_t length);
+
+#ifdef __cplusplus
+}
+#endif

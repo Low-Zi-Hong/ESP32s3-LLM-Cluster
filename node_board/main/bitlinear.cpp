@@ -3,6 +3,7 @@
 #include <cmath>
 #include "esp_log.h"
 #include "spi_flash_mmap.h"
+#include "esp_attr.h"
 
 static const char* TAG = "BITLINEAR";
 static spi_flash_mmap_handle_t s_mmap_handle;
@@ -43,9 +44,11 @@ esp_err_t bitlinear_init(LayerWeights* out_layer){
     return ESP_OK;
 }
 
-void bitlinear_forward(const float* input_X, const LayerWeights* layer, float* output_Y){
+// raw math
+void bitlinear_forward_old(const float* input_X, const LayerWeights* layer, float* output_Y){
     uint32_t packed_bytes_per_row = layer->in_dim /4;
 
+    //later here do divide 2 chunk of row for 2 CPUt
     for (uint32_t row = 0; row < layer->out_dim; ++row){
         const uint8_t* w_row = layer->packed_w + (row * packed_bytes_per_row);
         float acc = 0.0f;
@@ -56,23 +59,26 @@ void bitlinear_forward(const float* input_X, const LayerWeights* layer, float* o
 
             // real dot!!!
             uint8_t w0 = byte_val & 0x03;
+            uint8_t w1 = (byte_val >> 2) & 0x03;
+            uint8_t w2 = (byte_val >> 4) & 0x03;
+            uint8_t w3 = (byte_val >> 6) & 0x03;
+
             if(w0 == 0x01) acc += input_X[x_idx];
-            else if(w0 == 0x03) acc -= input_X[x_idx];
+            else if(w0 == 0x02) acc -= input_X[x_idx];
+            else if(w0 == 0x03) ESP_LOGE(TAG, "Catch ya!");
             x_idx++;
 
-            uint8_t w1 = (byte_val >> 2) & 0x03;
             if(w1 == 0x01) acc += input_X[x_idx];
-            else if(w1 == 0x03) acc -= input_X[x_idx];
+            else if(w1 == 0x02) acc -= input_X[x_idx];
+            else if(w0 == 0x03) ESP_LOGE(TAG, "Catch ya!");
             x_idx++;
             
-            uint8_t w2 = (byte_val >> 4) & 0x03;
             if(w2 == 0x01) acc += input_X[x_idx];
-            else if(w2 == 0x03) acc -= input_X[x_idx];
+            else if(w2 == 0x02) acc -= input_X[x_idx];
             x_idx++;
             
-            uint8_t w3 = (byte_val >> 6) & 0x03;
             if(w3 == 0x01) acc += input_X[x_idx];
-            else if(w3 == 0x03) acc -= input_X[x_idx];
+            else if(w3 == 0x02) acc -= input_X[x_idx];
             x_idx++;
         }
 
@@ -89,5 +95,24 @@ void bitlinear_forward(const float* input_X, const LayerWeights* layer, float* o
         }
 
         output_Y[row] = final_val;
+    }
+}
+
+void bitlinear_forward(const float* input_X, const LayerWeights* layer, float* output_Y){
+    uint32_t packed_bytes_per_row = layer->in_dim / 4;
+
+    for (uint32_t row = 0; row < layer->out_dim; ++row) {
+
+        const uint8_t* w_row = layer->packed_w + (row * packed_bytes_per_row);
+
+        float acc = bitlinear_forward_asm(input_X, w_row, layer->in_dim);
+
+        float final_val = acc * layer->scale;
+        if (layer->bias != nullptr) {
+            final_val += layer->bias[row];
+        }
+
+        output_Y[row] = final_val;
+
     }
 }

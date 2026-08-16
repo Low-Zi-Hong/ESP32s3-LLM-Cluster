@@ -18,6 +18,7 @@
 #include "esp_timer.h"
 #include <string.h> // use for memcmp
 #include "driver/gpio.h"
+#include <esp_err.h>
 
 // use psram
 #include "esp_heap_caps.h"
@@ -48,6 +49,11 @@ static spi_flash_mmap_handle_t s_mmap_handle;
 
 // byte to id array
 static int s_byte_to_id[256];
+
+#define MAX_LINE_LEN 256
+//#define MAX_GEN_LEN  128
+#define MAX_GEN_LEN  5 //for testing purpose
+#define EOS_TOKEN_ID 31997
 
 void init_control_gpio(void) {
     gpio_reset_pin(RST_OTHER_PIN);
@@ -184,6 +190,42 @@ size_t seq_to_str(TokenSeq result, char* out_buf, size_t max_buf_len){
     return buf_pos;
 }
 
+esp_err_t node_pipeline_forward(const float* in_vec, float* out_vec, size_t hidden_size, uint32_t pos) {
+    size_t payload_size = hidden_size * sizeof(float);
+
+    esp_err_t err = spi_bus_send_frame(PKG_TYPE_X_MATRIX, (void*)in_vec, payload_size, pos);
+    if (err != ESP_OK) return err;
+
+    SpiPkgType rx_type;
+    size_t rx_len = 0;
+    uint32_t rx_pos = 0;
+    return spi_bus_recv_frame(&rx_type,out_vec,&rx_len,&rx_pos);
+}
+
+void print_bench_report(int64_t t_prefill_start, int64_t t_prefill_end, int64_t t_decode_start, int64_t t_decode_end, size_t length, int generated_token) {
+    // 1. 修复减法变量：必须减去 t_prefill_start
+    float prefill_t = (float)(t_prefill_end - t_prefill_start) / 1000000.0f;
+    float prefill_tps = (prefill_t > 0.0f) ? ((float)length / prefill_t) : 0.0f;
+
+    // 2. Decode 耗时与 TPS
+    float decode_t = (float)(t_decode_end - t_decode_start) / 1000000.0f;
+    float decode_tps = (decode_t > 0.0f) ? ((float)generated_token / decode_t) : 0.0f;
+
+    // 3. TTFT (Time To First Token) 建议转换为毫秒 ms 或秒 s
+    float ttft_ms = (float)(t_prefill_end - t_prefill_start) / 1000.0f;
+
+    ESP_LOGI("BENCH", 
+        "\n================ [BENCHMARK] ================"
+        "\n  Prefill Time : %.3f s | Speed: %.2f tok/s (Tokens: %u)"
+        "\n  Decode Time  : %.3f s | Speed: %.2f tok/s (Tokens: %d)"
+        "\n  TTFT         : %.2f ms"
+        "\n=============================================",
+        prefill_t, prefill_tps, (unsigned int)length,
+        decode_t, decode_tps, generated_token,
+        ttft_ms
+    );
+}
+
 extern "C" void app_main(void)
 {
     printf("Hello world!\n");
@@ -238,105 +280,129 @@ extern "C" void app_main(void)
         ESP_LOGE("MAIN","embedding fail init");
     }
 
-     // store X in PSRAM
-    float* s_matrix_X = (float*)heap_caps_malloc(
-        MAX_TOKENS * emb_mod.hidden_size * sizeof(float),
-        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
-    );
-    if (!s_matrix_X) {
-        ESP_LOGE("MAIN", "PSRAM out of memory, fail allocate X");
-        return;
-    }
-
-    //test
-    const char* test_text = "hello马来西亚";
-    ESP_LOGI(TAG, "test text: '%s'",test_text);
-
-    int64_t t0 = esp_timer_get_time();
-    TokenSeq result = bpe_encode(test_text);
-    int64_t t1 = esp_timer_get_time();
-
-    ESP_LOGI(TAG, "time spent: %lld us",(t1-t0));
-    ESP_LOGI(TAG, "result:");
-    for (size_t i = 0; i < result.length; ++i) {
-        int id = result.ids[i];
-        const TokenEntry& entry = s_token_table[id];
-        printf("%d(%.*s) ", id, entry.length, s_string_pool + entry.offset);
-    }
-    printf("\n");
-
-    // output real string
-    char decode_buf[512] = {0};
-    seq_to_str(result,decode_buf,sizeof(decode_buf));
-
-    ESP_LOGI(TAG, "real result: '%s'",decode_buf);
-
-    // 4. 将 TokenSeq 查表合成为 Transformer 输入矩阵 X
-    int64_t t3 = esp_timer_get_time();
-    embedding_lookup_sequence(&emb_mod, &result, s_matrix_X);
-    int64_t t4 = esp_timer_get_time();
-
-    ESP_LOGI("MAIN", "Embedding 查表解包完成，耗时: %lld us", (t4 - t3));
-    ESP_LOGI("MAIN", "生成矩阵 X 维度: [%d, %lu]", result.length, emb_mod.hidden_size);
-
-    // 打印第一个 Token 对应向量的前 5 个元素作为验证
-    printf("Token 0 ('%d') 向量前 5 维数据: ", result.ids[0]);
-    for (int k = 0; k < 5; ++k) {
-        printf("%.4f ", s_matrix_X[k]);
-    }
-    printf("\n");
-
-    // test SPI line
     ESP_LOGI("MAIN","init SPI master node");
+
     if (spi_bus_init_node() != ESP_OK) {
         ESP_LOGE("MAIN", "SPI master init fail!");
         return;
     }
 
-    size_t payload_size = emb_mod.hidden_size * sizeof(float);
+    //for real
+    char user_input[256];
+    float* cur_token_vec = (float*)heap_caps_malloc(emb_mod.hidden_size * sizeof(float),MALLOC_CAP_SPIRAM);
+    float* node_out_vec = (float*)heap_caps_malloc(emb_mod.hidden_size * sizeof(float),MALLOC_CAP_SPIRAM);
 
-    ESP_LOGI("MAIN", "Transfering Token 0 with size: %u",payload_size);
+    char line[MAX_LINE_LEN];
+    int pos = 0;
 
-    esp_err_t err = spi_bus_send_frame(PKG_TYPE_X_MATRIX,s_matrix_X,payload_size,0);
-    if(err == ESP_OK) {
-        ESP_LOGI("MAIN", "SPI success!");
-    } else {
-        ESP_LOGE("MAIN", "SPI ERROR: %s", esp_err_to_name(err));
-    }
-    int64_t t5 = esp_timer_get_time();
+    printf("\n>>> Qwen 1.58-bit MCU Cluster Ready. Type prompt and press Enter.\n");
+    printf("\nUser > ");
+    fflush(stdout);
 
-    //rev back data
-    SpiPkgType rx_type;
-    size_t rx_len = 0;
-    uint32_t currentpos = 0;
+    bool benchmark = false;
+    int64_t t_prefill_start;
+    int64_t t_prefill_end;
+    int64_t t_decode_start;
+    int64_t t_decode_end;
+    int generated_tokens = 0;
+    size_t prompt_token_length = 0;
 
-    err = spi_bus_recv_frame(&rx_type, s_matrix_X, &rx_len,&currentpos);
-    int64_t t6 = esp_timer_get_time();
+    while(true) {
 
-    if (err == ESP_OK) {
-        ESP_LOGI("MAIN", "successfully receive matrix X: type: 0x%02X | length: %u bytes", rx_type, rx_len);
-        ESP_LOGI("MAIN", "transfer accross 3 nodes: %lld us", (t6 - t5));
-        // 打印验证 Node 算完回传回来的前 5 维数据
-        printf("Node 回传的向量前 5 维数据: ");
-        for (int k = 0; k < 5; ++k) {
-            printf("%.4f ", s_matrix_X[k]);
+        int ch = getchar();
+        if (ch != EOF) {
+
+            if (ch == 127 || ch == '\b') {
+                if (pos > 0) {
+                    pos--;
+                    line[pos] = '\0';
+                    printf("\b \b");
+                    fflush(stdout);
+                }
+                continue;
+            }
+
+            if (ch == '\n' || ch == '\r') {
+                if (pos == 0) continue;
+                line[pos] = '\0';
+                printf("\n");
+
+                if( line[0] == '/'){
+                    if(strcmp(line, "/bench") == 0) {
+                        benchmark = !benchmark; // 支持开/关切换
+                        printf(">>> Benchmark Mode: %s\n", benchmark ? "ON" : "OFF");
+                    }
+                } else {
+                    TokenSeq prompt_token = bpe_encode(line);
+                    prompt_token_length = prompt_token.length;
+                    if (prompt_token.length > 0) {
+                        generated_tokens = 0;
+                        printf("Assitant > ");
+                        fflush(stdout);
+
+                        t_prefill_start = esp_timer_get_time();
+                        uint32_t current_pos = 0;
+
+                        for(size_t i = 0; i < prompt_token.length; i++) {
+                            int token_id = prompt_token.ids[i];
+
+                            TokenSeq single_seq = { .ids = token_id, .length = 1};
+                            embedding_lookup_sequence(&emb_mod, &single_seq, cur_token_vec);
+
+                            esp_err_t err = node_pipeline_forward(cur_token_vec,node_out_vec,emb_mod.hidden_size,current_pos);
+                            if (err!= ESP_OK) {
+                                ESP_LOGE(TAG,"pipeline fail...");
+                                break;
+                            }
+                            t_prefill_end = esp_timer_get_time();
+                            current_pos++;
+                        }
+
+                        t_decode_start = esp_timer_get_time();
+                        int next_token_id = -1;
+
+                        for(int step = 0; step < MAX_GEN_LEN; ++step) {
+                            next_token_id = lm_head_sample(&emb_mod, node_out_vec, 0.0f);
+
+                            if(next_token_id == EOS_TOKEN_ID || next_token_id < 0 || next_token_id >= (int)s_header->vocab_size) {
+                                break;
+                            }
+
+                            const TokenEntry& entry = s_token_table[next_token_id];
+                            generated_tokens++;
+                            printf("%.*s", entry.length, s_string_pool + entry.offset);
+                            fflush(stdout);
+
+                            TokenSeq next_seq = { .ids = next_token_id, .length = 1};
+                            embedding_lookup_sequence(&emb_mod, &next_seq, cur_token_vec);
+
+                            esp_err_t err = node_pipeline_forward(cur_token_vec,node_out_vec,emb_mod.hidden_size,current_pos);
+                            if (err != ESP_OK) {
+                                ESP_LOGE(TAG, "pipeline forward fail at pos: %lu", current_pos);
+                                break;
+                            }
+
+                            current_pos++;
+                        }
+                        t_decode_end = esp_timer_get_time();
+                    }
+                    if(benchmark) print_bench_report(t_prefill_start,t_prefill_end,t_decode_start,t_decode_end,prompt_token_length,generated_tokens);
+                    printf("\n\nUser > ");
+                }
+
+
+                pos = 0;
+                line[0] = '\0';
+                fflush(stdout);
+            } else {
+                if(pos < MAX_LINE_LEN - 1) {
+                    line[pos++] = ch;
+                    line[pos] = '\0';
+                    putchar(ch);
+                    fflush(stdout);
+                }
+            }
         }
-        printf("\n");
-
-        int64_t t_lm_0 = esp_timer_get_time();
-        int next_token_id = lm_head_sample(&emb_mod, s_matrix_X, 0.0f);
-        int64_t t_lm_1 = esp_timer_get_time();
-
-        ESP_LOGI("MAIN", "LM head finish prediction used: %lld us",(t_lm_1 - t_lm_0));
-        ESP_LOGI("MAIN", "Predicted: %d", next_token_id);
-
-        if (next_token_id >= 0 && next_token_id < (int)s_header->vocab_size) {
-            const TokenEntry& entry = s_token_table[next_token_id];
-            printf("first token: %.*s\n", entry.length, s_string_pool + entry.offset);
-        }
-    
-    }else {
-        ESP_LOGE("MAIN", "SPI Recv ERROR: %s", esp_err_to_name(err));
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
-
 }
