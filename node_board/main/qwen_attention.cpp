@@ -19,6 +19,8 @@
 static const char* TAG = "TRANSFORMER";
 static spi_flash_mmap_handle_t s_mmap_handle;
 
+#include "esp_timer.h"
+
 
 #define MAX_CTX_LEN 512
 #define NUM_LAYERS_PER_NODE 4
@@ -35,10 +37,14 @@ static float* temp_K;
 static float* temp_V;
 static float* temp_Attn_Mid;
 static float* temp_Mid_X;
+static int8_t* temp_X_int8;
 static float* temp_Gate;
 static float* temp_Up;
+static int8_t* temp_MLP_Mid_int8;
 static float* temp_MLP_Mid;
 static float* temp_Scores;
+
+static float temp_scale;
 
 esp_err_t init_transformer_layer(TransformerLayer* layers, int num_layers) {
     const esp_partition_t* part = esp_partition_find_first(
@@ -226,39 +232,61 @@ void init_runtime_buffers() {
     temp_V        = (float*)heap_caps_malloc(QWEN_KV_DIM * sizeof(float), MALLOC_CAP_SPIRAM);
     temp_Attn_Mid = (float*)heap_caps_malloc(QWEN_HIDDEN_SIZE * sizeof(float), MALLOC_CAP_SPIRAM);
     temp_Mid_X    = (float*)heap_caps_malloc(QWEN_HIDDEN_SIZE * sizeof(float), MALLOC_CAP_SPIRAM);
+    temp_X_int8   = (int8_t*)heap_caps_malloc(QWEN_HIDDEN_SIZE * sizeof(int8_t), MALLOC_CAP_SPIRAM);
     
     temp_Gate     = (float*)heap_caps_malloc(QWEN_INTERMEDIATE_SIZE * sizeof(float), MALLOC_CAP_SPIRAM);
     temp_Up       = (float*)heap_caps_malloc(QWEN_INTERMEDIATE_SIZE * sizeof(float), MALLOC_CAP_SPIRAM);
-    temp_MLP_Mid  = (float*)heap_caps_malloc(QWEN_INTERMEDIATE_SIZE * sizeof(float), MALLOC_CAP_SPIRAM);
+    temp_MLP_Mid_int8= (int8_t*)heap_caps_malloc(QWEN_INTERMEDIATE_SIZE * sizeof(int8_t), MALLOC_CAP_SPIRAM);
+    temp_MLP_Mid    = (float*)heap_caps_malloc(QWEN_INTERMEDIATE_SIZE * sizeof(float), MALLOC_CAP_SPIRAM);
     temp_Scores   = (float*)heap_caps_malloc(MAX_CTX_LEN * sizeof(float), MALLOC_CAP_SPIRAM);
 }
 
-void forward_attention_block(const float* input_X, float* output_X, const TransformerLayer* layer,int layer_idx,int current_pos){
-    rms_norm(input_X, layer->rms_norm_1_weight,temp_norm_X,QWEN_HIDDEN_SIZE);
+//#define FINE_BENCHMARK
 
+void forward_attention_block_without_q(const float* input_X, float* output_X, const TransformerLayer* layer,int layer_idx,int current_pos){
+    rms_norm(input_X, layer->rms_norm_1_weight,temp_norm_X,QWEN_HIDDEN_SIZE);
+    
+    int64_t t0 = esp_timer_get_time();
+    
     bitlinear_forward(temp_norm_X, &layer->w_q, temp_Q);
     bitlinear_forward(temp_norm_X, &layer->w_k, temp_K);
     bitlinear_forward(temp_norm_X, &layer->w_v, temp_V);
+    
+    int64_t t1 = esp_timer_get_time();
 
     apply_rope(temp_Q, QWEN_NUM_Q_HEADS, QWEN_HEAD_DIM,current_pos);
     apply_rope(temp_K, QWEN_NUM_KV_HEADS, QWEN_HEAD_DIM,current_pos);
+
+    int64_t t2 = esp_timer_get_time();
 
     int kv_cache_offset = current_pos * QWEN_KV_DIM;
     memcpy(s_k_cache[layer_idx] + kv_cache_offset, temp_K, QWEN_KV_DIM * sizeof(float));
     memcpy(s_v_cache[layer_idx] + kv_cache_offset, temp_V, QWEN_KV_DIM * sizeof(float));
 
+    int64_t t3 = esp_timer_get_time();
+
     compute_gpa_attention(temp_Q,s_k_cache[layer_idx],s_v_cache[layer_idx],current_pos,MAX_CTX_LEN,temp_Attn_Mid);
 
+    int64_t t4 = esp_timer_get_time();
+
     bitlinear_forward(temp_Attn_Mid,&layer->w_o, temp_Q);
+
+    int64_t t5 = esp_timer_get_time();
 
     for (int i = 0; i < QWEN_HIDDEN_SIZE; i++) {
         temp_Mid_X[i] = input_X[i] + temp_Q[i];
     }
 
+    int64_t t6 = esp_timer_get_time();
+
     rms_norm(temp_Mid_X, layer->rms_norm_2_weight,temp_norm_X,QWEN_HIDDEN_SIZE);
 
-    bitlinear_forward(temp_norm_X,&layer->w_gate,temp_Gate);
-    bitlinear_forward(temp_norm_X,&layer->w_up,temp_Up);
+    int64_t t7 = esp_timer_get_time();
+
+    bitlinear_forward(temp_Mid_X,&layer->w_gate,temp_Gate);
+    bitlinear_forward(temp_Mid_X,&layer->w_up,temp_Up);
+
+    int64_t t8 = esp_timer_get_time();
 
     for (int i = 0; i < QWEN_INTERMEDIATE_SIZE; i++) {
         float x = temp_Gate[i];
@@ -266,10 +294,96 @@ void forward_attention_block(const float* input_X, float* output_X, const Transf
         temp_MLP_Mid[i] = silu_val * temp_Up[i];
     }
 
+    int64_t t9 = esp_timer_get_time();
+
     bitlinear_forward(temp_MLP_Mid,&layer->w_down,temp_Attn_Mid);
+
+    int64_t t10 = esp_timer_get_time();
 
     for(int i = 0; i < QWEN_HIDDEN_SIZE; i++) {
         output_X[i] = temp_Mid_X[i] + temp_Attn_Mid[i];
     }
+    
+    int64_t t11 = esp_timer_get_time();
+
+#ifdef FINE_BENCHMARK
+    ESP_LOGI(TAG,"Fine Benchmark: \nQKV mul X: %lld us \n apply rope QK: %lld us \n add kv cache: %lld us\n attention: %lld us \nout_proj:%lld us\n residual connection 1: %lld us \n rms_norm 2: %lld us\n MLP layer: %lld us \n silu:%lld us \n  MLP_down: %lld us \n residual conn 2:%lld us\n", (t1-t0),(t2-t1),(t3-t2),(t4-t3),(t5-t4),(t6-t5),(t7-t6),(t8-t7),(t9-t8),(t10-t9),(t11-t10));
+#endif
+    
+}
+
+void forward_attention_block(const float* input_X, float* output_X, const TransformerLayer* layer,int layer_idx,int current_pos){
+    rms_norm(input_X, layer->rms_norm_1_weight,temp_norm_X,QWEN_HIDDEN_SIZE);
+    
+    int64_t t0 = esp_timer_get_time();
+
+    quantize_X(temp_norm_X,temp_X_int8,QWEN_HIDDEN_SIZE,&temp_scale);
+    
+    bitlinear_forward_q(temp_X_int8,temp_scale, &layer->w_q, temp_Q);
+    bitlinear_forward_q(temp_X_int8,temp_scale, &layer->w_k, temp_K);
+    bitlinear_forward_q(temp_X_int8,temp_scale, &layer->w_v, temp_V);
+    
+    int64_t t1 = esp_timer_get_time();
+
+    apply_rope(temp_Q, QWEN_NUM_Q_HEADS, QWEN_HEAD_DIM,current_pos);
+    apply_rope(temp_K, QWEN_NUM_KV_HEADS, QWEN_HEAD_DIM,current_pos);
+
+    int64_t t2 = esp_timer_get_time();
+
+    int kv_cache_offset = current_pos * QWEN_KV_DIM;
+    memcpy(s_k_cache[layer_idx] + kv_cache_offset, temp_K, QWEN_KV_DIM * sizeof(float));
+    memcpy(s_v_cache[layer_idx] + kv_cache_offset, temp_V, QWEN_KV_DIM * sizeof(float));
+
+    int64_t t3 = esp_timer_get_time();
+
+    compute_gpa_attention(temp_Q,s_k_cache[layer_idx],s_v_cache[layer_idx],current_pos,MAX_CTX_LEN,temp_Attn_Mid);
+
+    int64_t t4 = esp_timer_get_time();
+
+    quantize_X(temp_Attn_Mid, temp_X_int8, QWEN_HIDDEN_SIZE, &temp_scale);
+    bitlinear_forward_q(temp_X_int8, temp_scale, &layer->w_o, temp_Q);
+
+    int64_t t5 = esp_timer_get_time();
+
+    for (int i = 0; i < QWEN_HIDDEN_SIZE; i++) {
+        temp_Mid_X[i] = input_X[i] + temp_Q[i];
+    }
+
+    int64_t t6 = esp_timer_get_time();
+
+    rms_norm(temp_Mid_X, layer->rms_norm_2_weight,temp_norm_X,QWEN_HIDDEN_SIZE);
+
+    int64_t t7 = esp_timer_get_time();
+
+    quantize_X(temp_norm_X,temp_X_int8,QWEN_HIDDEN_SIZE,&temp_scale);
+
+    bitlinear_forward_q(temp_X_int8,temp_scale,&layer->w_gate,temp_Gate);
+    bitlinear_forward_q(temp_X_int8,temp_scale,&layer->w_up,temp_Up);
+
+    int64_t t8 = esp_timer_get_time();
+
+    for (int i = 0; i < QWEN_INTERMEDIATE_SIZE; i++) {
+        float x = temp_Gate[i];
+        float silu_val = x / (1.0f + expf(-x));
+        temp_MLP_Mid[i] = silu_val * temp_Up[i];
+    }
+
+    quantize_X(temp_MLP_Mid,temp_MLP_Mid_int8,QWEN_INTERMEDIATE_SIZE, &temp_scale);
+
+    int64_t t9 = esp_timer_get_time();
+
+    bitlinear_forward_q(temp_MLP_Mid_int8,temp_scale,&layer->w_down,temp_Attn_Mid);
+
+    int64_t t10 = esp_timer_get_time();
+
+    for(int i = 0; i < QWEN_HIDDEN_SIZE; i++) {
+        output_X[i] = temp_Mid_X[i] + temp_Attn_Mid[i];
+    }
+    
+    int64_t t11 = esp_timer_get_time();
+
+#ifdef FINE_BENCHMARK
+    ESP_LOGI(TAG,"Fine Benchmark: \nQKV mul X: %lld us \n apply rope QK: %lld us \n add kv cache: %lld us\n attention: %lld us \nout_proj:%lld us\n residual connection 1: %lld us \n rms_norm 2: %lld us\n MLP layer: %lld us \n silu:%lld us \n  MLP_down: %lld us \n residual conn 2:%lld us\n", (t1-t0),(t2-t1),(t3-t2),(t4-t3),(t5-t4),(t6-t5),(t7-t6),(t8-t7),(t9-t8),(t10-t9),(t11-t10));
+#endif
     
 }

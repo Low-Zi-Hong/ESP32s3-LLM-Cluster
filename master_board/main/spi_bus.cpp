@@ -104,10 +104,10 @@ esp_err_t spi_bus_recv_frame(SpiPkgType* out_type, void* out_payload, size_t* ou
     // check magic num
     SpiHeader* hdr = (SpiHeader*)s_dma_rx_buf;
     if(hdr->magic[0] != 'S' || hdr->magic[1] != 'P') {
-        //ESP_LOGE(TAG, "SPI 魔数错误! 预期:53 50, 实际收到: %02X %02X", hdr->magic[0], hdr->magic[1]);
-        //ESP_LOGE(TAG, "Raw Header Hex: %02X %02X %02X %02X %02X %02X %02X %02X",
-        //         s_dma_rx_buf[0], s_dma_rx_buf[1], s_dma_rx_buf[2], s_dma_rx_buf[3],
-        //         s_dma_rx_buf[4], s_dma_rx_buf[5], s_dma_rx_buf[6], s_dma_rx_buf[7]);
+        ESP_LOGE(TAG, "SPI 魔数错误! 预期:53 50, 实际收到: %02X %02X", hdr->magic[0], hdr->magic[1]);
+        ESP_LOGE(TAG, "Raw Header Hex: %02X %02X %02X %02X %02X %02X %02X %02X",
+                 s_dma_rx_buf[0], s_dma_rx_buf[1], s_dma_rx_buf[2], s_dma_rx_buf[3],
+                 s_dma_rx_buf[4], s_dma_rx_buf[5], s_dma_rx_buf[6], s_dma_rx_buf[7]);
         return ESP_FAIL;
     }
 

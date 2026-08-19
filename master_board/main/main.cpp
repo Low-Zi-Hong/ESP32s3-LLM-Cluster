@@ -19,6 +19,7 @@
 #include <string.h> // use for memcmp
 #include "driver/gpio.h"
 #include <esp_err.h>
+#include <math.h>
 
 // use psram
 #include "esp_heap_caps.h"
@@ -69,7 +70,7 @@ void init_control_gpio(void) {
     vTaskDelay(pdMS_TO_TICKS(50));
     gpio_set_level(RST_OTHER_PIN, 1);
 
-    int timeout_ms = 2000; // 给它 2 秒时间变低
+    int timeout_ms = 20000; // 给它 2 秒时间变低
     bool node_responded_low = false;
 
     while (timeout_ms > 0) {
@@ -130,7 +131,7 @@ int lookup_merge_rule(uint16_t left, uint16_t right) {
 }
 
 TokenSeq bpe_encode(const char* text) {
-    TokenSeq seq;
+    TokenSeq seq = {0};
     const uint8_t* bytes = (const uint8_t*)text;
     size_t text_len = strlen(text);
 
@@ -200,6 +201,22 @@ esp_err_t node_pipeline_forward(const float* in_vec, float* out_vec, size_t hidd
     size_t rx_len = 0;
     uint32_t rx_pos = 0;
     return spi_bus_recv_frame(&rx_type,out_vec,&rx_len,&rx_pos);
+}
+
+void final_rms_norm_weightless(const float* input, float* output, int size, float eps = 1e-6f) {
+    float sum_sq = 0.0f;
+    for (int i = 0; i < size; i++) {
+        sum_sq += input[i] * input[i];
+    }
+    
+    // 计算均方根 (RMS)
+    float rms = sqrtf((sum_sq / (float)size) + eps);
+    float inv_rms = 1.0f / rms;
+    
+    // 只做缩放，不乘任何 weight 数组
+    for (int i = 0; i < size; i++) {
+        output[i] = input[i] * inv_rms; 
+    }
 }
 
 void print_bench_report(int64_t t_prefill_start, int64_t t_prefill_end, int64_t t_decode_start, int64_t t_decode_end, size_t length, int generated_token) {
@@ -291,6 +308,7 @@ extern "C" void app_main(void)
     char user_input[256];
     float* cur_token_vec = (float*)heap_caps_malloc(emb_mod.hidden_size * sizeof(float),MALLOC_CAP_SPIRAM);
     float* node_out_vec = (float*)heap_caps_malloc(emb_mod.hidden_size * sizeof(float),MALLOC_CAP_SPIRAM);
+    float* temp_final_out = (float*)heap_caps_malloc(emb_mod.hidden_size * sizeof(float),MALLOC_CAP_SPIRAM);
 
     char line[MAX_LINE_LEN];
     int pos = 0;
@@ -362,7 +380,8 @@ extern "C" void app_main(void)
                         int next_token_id = -1;
 
                         for(int step = 0; step < MAX_GEN_LEN; ++step) {
-                            next_token_id = lm_head_sample(&emb_mod, node_out_vec, 0.0f);
+                            final_rms_norm_weightless(node_out_vec, temp_final_out, emb_mod.hidden_size);
+                            next_token_id = lm_head_sample(&emb_mod, temp_final_out, 0.0f);
 
                             if(next_token_id == EOS_TOKEN_ID || next_token_id < 0 || next_token_id >= (int)s_header->vocab_size) {
                                 break;
@@ -376,11 +395,19 @@ extern "C" void app_main(void)
                             TokenSeq next_seq = { .ids = next_token_id, .length = 1};
                             embedding_lookup_sequence(&emb_mod, &next_seq, cur_token_vec);
 
+                            printf("[Step %d] Next ID: %d | Emb[0..3]: %.4f, %.4f, %.4f, %.4f\n", 
+                                step, next_token_id, 
+                                cur_token_vec[0], cur_token_vec[1], cur_token_vec[2], cur_token_vec[3]);
+
                             esp_err_t err = node_pipeline_forward(cur_token_vec,node_out_vec,emb_mod.hidden_size,current_pos);
                             if (err != ESP_OK) {
                                 ESP_LOGE(TAG, "pipeline forward fail at pos: %lu", current_pos);
                                 break;
                             }
+
+                            printf("[Step %d] Out[0..3]: %.4f, %.4f, %.4f, %.4f\n", 
+                            step, 
+                            node_out_vec[0], node_out_vec[1], node_out_vec[2], node_out_vec[3]);
 
                             current_pos++;
                         }
