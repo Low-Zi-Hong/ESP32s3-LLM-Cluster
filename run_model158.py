@@ -102,16 +102,17 @@ def load_and_generate(
     model.eval()
     
     # 测试 Prompt
-    prompt = "Hello, what is the meaning of life?"
+    prompt = "asd"
     inputs = tokenizer(prompt, return_tensors="pt").to(device)
     
     with torch.no_grad():
         outputs = model.generate(
             **inputs, 
-            max_new_tokens=30, # 先生成 30 个词看看情况
-            temperature=0.7, 
-            do_sample=True,
-            repetition_penalty=1.2 # 极度压缩的模型容易结巴，加点惩罚
+            max_new_tokens=30, 
+            do_sample=False,        # 关闭采样，使用严格的 Argmax
+            temperature=None,       # 贪心搜索不需要 temperature
+            top_p=None              # 关闭 Top-P
+            # 移除 repetition_penalty
         )
     
     response = tokenizer.decode(outputs[0], skip_special_tokens=True)

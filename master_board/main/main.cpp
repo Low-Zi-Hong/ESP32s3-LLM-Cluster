@@ -53,7 +53,7 @@ static int s_byte_to_id[256];
 
 #define MAX_LINE_LEN 256
 //#define MAX_GEN_LEN  128
-#define MAX_GEN_LEN  5 //for testing purpose
+#define MAX_GEN_LEN  20 //for testing purpose
 #define EOS_TOKEN_ID 31997
 
 void init_control_gpio(void) {
@@ -395,19 +395,11 @@ extern "C" void app_main(void)
                             TokenSeq next_seq = { .ids = next_token_id, .length = 1};
                             embedding_lookup_sequence(&emb_mod, &next_seq, cur_token_vec);
 
-                            printf("[Step %d] Next ID: %d | Emb[0..3]: %.4f, %.4f, %.4f, %.4f\n", 
-                                step, next_token_id, 
-                                cur_token_vec[0], cur_token_vec[1], cur_token_vec[2], cur_token_vec[3]);
-
                             esp_err_t err = node_pipeline_forward(cur_token_vec,node_out_vec,emb_mod.hidden_size,current_pos);
                             if (err != ESP_OK) {
                                 ESP_LOGE(TAG, "pipeline forward fail at pos: %lu", current_pos);
                                 break;
                             }
-
-                            printf("[Step %d] Out[0..3]: %.4f, %.4f, %.4f, %.4f\n", 
-                            step, 
-                            node_out_vec[0], node_out_vec[1], node_out_vec[2], node_out_vec[3]);
 
                             current_pos++;
                         }
