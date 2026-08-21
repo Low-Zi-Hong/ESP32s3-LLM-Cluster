@@ -67,7 +67,6 @@ esp_err_t embedding_init(EmbeddingModule* emb, const char* partition_label) {
 
     return ESP_OK;
 }
-
 void embedding_lookup_token(const EmbeddingModule* emb, int token_id, float* out_vec){
     if(token_id < 0 || (uint32_t)token_id >= emb->vocab_size){
         memset(out_vec, 0, emb->hidden_size * sizeof(float));
@@ -79,11 +78,15 @@ void embedding_lookup_token(const EmbeddingModule* emb, int token_id, float* out
 
     const uint8_t* row_packed = emb->packed_emb_ptr + ((size_t)token_id * emb->packed_cols);
     
-    for (uint32_t j = 0; j<emb->packed_cols; ++j){
-        uint8_t packed_val = row_packed[j];
+    for (uint32_t j = 0; j < emb->packed_cols; ++j){
+        uint8_t val = row_packed[j];
 
-        int8_t w0 = (int8_t)((packed_val >> 4) & 0x0f) - 8;
-        int8_t w1 = (int8_t)(packed_val & 0x0f) -8;
+        // 完美对齐 lm_head_sample：低 4 位给偶数，高 4 位给奇数，补码符号扩展
+        int8_t w0 = (int8_t)(val & 0x0F);
+        if (w0 & 0x08) w0 |= 0xF0;
+
+        int8_t w1 = (int8_t)((val >> 4) & 0x0F);
+        if (w1 & 0x08) w1 |= 0xF0;
 
         out_vec[j * 2 + 0] = (float)w0 * scale;
         out_vec[j * 2 + 1] = (float)w1 * scale;

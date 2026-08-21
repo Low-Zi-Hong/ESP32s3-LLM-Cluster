@@ -4,6 +4,10 @@
 #include <stddef.h>
 #include "esp_err.h"
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/semphr.h"
+
 #define QWEN_HIDDEN_SIZE        896
 #define QWEN_INTERMEDIATE_SIZE  4864
 #define QWEN_NUM_Q_HEADS        14
@@ -23,6 +27,26 @@ struct LayerWeights {
     uint32_t out_dim;
 };
 
+struct BitLinearTaskArgs {
+    const float* input_X;
+    const LayerWeights* layer;
+    float* output_Y;
+    uint32_t start_row;
+    uint32_t end_row;
+    SemaphoreHandle_t done_sem;
+};
+struct BitLinearTaskArgsQ {
+    const int8_t* input_X_q;
+    const float scale;
+    const LayerWeights* layer;
+    float* output_Y;
+    uint32_t start_row;
+    uint32_t end_row;
+    SemaphoreHandle_t done_sem;
+};
+
+void bitlinear_worker_task(void* arg);
+
 /**
  * @brief 初始化 Node 逻辑，自动寻找 "model" 分区并完成 MMAP 零拷贝映射
  * @param out_layer 传出初始化好的 LayerWeights 结构体
@@ -37,11 +61,16 @@ esp_err_t bitlinear_init(LayerWeights* out_layer);
  */
 void bitlinear_forward(const float* input_X, const LayerWeights* layer, float* output_Y);
 
+esp_err_t quantize_X(const float* input_X, int8_t* input_X_q, uint32_t dim, float* out_scale);
+
+void bitlinear_forward_q(const int8_t* input_X_q,const float scale, const LayerWeights* layer, float* output_Y);
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 float bitlinear_forward_asm(const float* x_vec, const uint8_t* packed_w_row, uint32_t length);
+int32_t bitlinear_forward_q_asm(const int8_t* x_vec, const uint8_t* packed_w_row, uint32_t length);
 
 #ifdef __cplusplus
 }

@@ -10,7 +10,9 @@ bitlinear_forward_asm:
     # a3: const uint8_t* packed_w_row
     # a4: uint32_t length
 
-    ee.vzero.q q7       # empty acc q7
+#    ee.zero.q q7       # empty acc q7
+    movi    a14, 0
+    wfr     f0, a14     # wfr (Write Float Register)
     srli    a4, a4, 2   # a4 = length / 4 (loop time)
 
     addi    a5, a1, 0   # a5 = &stack_valid_mask
@@ -74,27 +76,28 @@ bitlinear_forward_asm:
     ee.vld.128.ip   q1, a12, 16     # get 128-bit Valid_mask
     ee.vld.128.ip   q2, a13, 16     # get 128-bit Sign_mask
 
-    ee.vand.q       q3, q0, q1      # q3 = X & Valid_mask
-    ee.vxor.q       q3, q3, q2      # q3 = q3 ^ Sign_Mask
-    ee.vfadd.s32.q  q7, q7, q3      # acc to q7
+    ee.andq       q3, q0, q1       # q3 = X & Valid_mask
+    ee.xorq       q3, q3, q2       # q3 = q3 ^ Sign_Mask
+    # ee.vfadd.s32.q  q7, q7, q3       # acc to q7  no float acc
+
+    mov a14, a5
+    ee.vst.128.ip   q3, a14, 16
+
+    lsi     f1, a5, 0       # load acc[0]   [Load Single-percision Float Immediate]
+    lsi     f2, a5, 4       # load acc[1]
+    lsi     f3, a5, 8       # load acc[2]
+    lsi     f4, a5, 12      # load acc[3]
+
+    add.s   f1, f1, f2      
+    add.s   f3, f3, f4     
+    add.s   f1, f1, f3
+    add.s   f0, f0, f1
 
     addi   a4, a4, -1      # length -1, countdown how many togo
     j       .L_dot_loop
 
 .L_dot_end:
     # Reduction
-
-    mov a12, a5
-    ee.vst.128.ip   q7, a12, 16
-
-    lsi     f0, a5, 0       # load acc[0]   [Load Single-percision Float Immediate]
-    lsi     f1, a5, 4       # load acc[1]
-    lsi     f2, a5, 8       # load acc[2]
-    lsi     f3, a5, 12      # load acc[3]
-
-    add.s   f0, f0, f1      # f0 = acc[0] + acc[1]
-    add.s   f2, f2, f3      # f2 = acc[2] + acc[3]
-    add.s   f0, f0, f2      # f0 = upper + below
     
     retw
-.size bitlinear_forward_asm, . - bitlinear_forward_asm
+    .size bitlinear_forward_asm, . - bitlinear_forward_asm

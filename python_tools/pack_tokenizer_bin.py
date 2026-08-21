@@ -14,7 +14,7 @@ def get_unicode_to_bytes():
     # 建立反向字典: Unicode 字符 -> 原始单字节 (0~255)
     return {chr(c): b for b, c in zip(bs, cs)}
 
-def build_esp32_tokenizer(json_path="./cropped_model/tokenizer.json", bin_path="./cropped_model/tokenizer.bin"):
+def build_esp32_tokenizer(json_path="../cropped_Qwen/tokenizer.json", bin_path="../cropped_Qwen/tokenizer.bin"):
     print(f"正在读取 {json_path} ...")
     with open(json_path, 'r', encoding='utf-8') as f:
         data = json.load(f)

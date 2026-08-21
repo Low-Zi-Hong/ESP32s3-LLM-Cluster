@@ -4,22 +4,26 @@ from safetensors.torch import save_file
 
 def pack_tensor_to_int4(weight: torch.Tensor):
     """
-    将 FP16 张量按行量化为 4-bit，并打包成 uint8
+    将 FP16 张量按行量化为 4-bit，并打包成 uint8 (严格对齐 C++ 端补码与位序)
     """
     max_val = weight.abs().max(dim=-1, keepdim=True).values
     scale = max_val / 7.0 + 1e-7
     weight_q = torch.clamp(torch.round(weight / scale), min=-8, max=7).to(torch.int8)
-    weight_u4 = (weight_q + 8).to(torch.uint8)
+    
+    # 1. 补码对齐：使用位与运算保留 4-bit 补码结构，丢弃加 8 的偏移法
+    weight_u4 = weight_q & 0x0F
     
     out_features, in_features = weight_u4.shape
     weight_reshaped = weight_u4.view(out_features, in_features // 2, 2)
-    packed_weight = (weight_reshaped[:, :, 0] << 4) | weight_reshaped[:, :, 1]
+    
+    # 2. 字节序对齐：奇数索引 (1) 放高位 << 4，偶数索引 (0) 放低位
+    packed_weight = (weight_reshaped[:, :, 1] << 4) | weight_reshaped[:, :, 0]
     
     return packed_weight.cpu(), scale.to(torch.float16).cpu()
 
 def repack_safetensors_with_4bit_emb_and_drop_head(
-    input_path="cropped_model/model_158.safetensors", 
-    output_path="cropped_model/model158_bit4.safetensors"
+    input_path="../cropped_Qwen/qwen_158.safetensors", 
+    output_path="../cropped_Qwen/qwen_158_int4.safetensors"
 ):
     print(f"正在打开文件: {input_path}")
     export_dict = {}

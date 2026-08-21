@@ -19,6 +19,7 @@
 #include <string.h> // use for memcmp
 #include "driver/gpio.h"
 #include <esp_err.h>
+#include <math.h>
 
 // use psram
 #include "esp_heap_caps.h"
@@ -52,7 +53,7 @@ static int s_byte_to_id[256];
 
 #define MAX_LINE_LEN 256
 //#define MAX_GEN_LEN  128
-#define MAX_GEN_LEN  5 //for testing purpose
+#define MAX_GEN_LEN  20 //for testing purpose
 #define EOS_TOKEN_ID 31997
 
 void init_control_gpio(void) {
@@ -69,7 +70,7 @@ void init_control_gpio(void) {
     vTaskDelay(pdMS_TO_TICKS(50));
     gpio_set_level(RST_OTHER_PIN, 1);
 
-    int timeout_ms = 2000; // 给它 2 秒时间变低
+    int timeout_ms = 20000; // 给它 2 秒时间变低
     bool node_responded_low = false;
 
     while (timeout_ms > 0) {
@@ -130,7 +131,7 @@ int lookup_merge_rule(uint16_t left, uint16_t right) {
 }
 
 TokenSeq bpe_encode(const char* text) {
-    TokenSeq seq;
+    TokenSeq seq = {0};
     const uint8_t* bytes = (const uint8_t*)text;
     size_t text_len = strlen(text);
 
@@ -200,6 +201,25 @@ esp_err_t node_pipeline_forward(const float* in_vec, float* out_vec, size_t hidd
     size_t rx_len = 0;
     uint32_t rx_pos = 0;
     return spi_bus_recv_frame(&rx_type,out_vec,&rx_len,&rx_pos);
+}
+
+// 注意：传入的 norm_weight 是 uint16_t* (因为文件里存的是 FP16)
+void final_rms_norm(const float* input, float* output, const uint16_t* norm_weight, int size, float eps = 1e-6f) {
+    float sum_sq = 0.0f;
+    for (int i = 0; i < size; i++) {
+        sum_sq += input[i] * input[i];
+    }
+    
+    // 计算均方根 (RMS)
+    float rms = sqrtf((sum_sq / (float)size) + eps);
+    float inv_rms = 1.0f / rms;
+    
+    // 灵魂注入：乘上 FP16 的 weight！
+    for (int i = 0; i < size; i++) {
+        // 利用你代码里已有的 fp16_to_fp32 函数进行转换
+        float w = fp16_to_fp32(norm_weight[i]); 
+        output[i] = input[i] * inv_rms * w; 
+    }
 }
 
 void print_bench_report(int64_t t_prefill_start, int64_t t_prefill_end, int64_t t_decode_start, int64_t t_decode_end, size_t length, int generated_token) {
@@ -287,10 +307,46 @@ extern "C" void app_main(void)
         return;
     }
 
+    // rms_weight
+    // 1. 找到并映射 fnorm 分区
+    const esp_partition_t *fnorm_part = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, (esp_partition_subtype_t)0x40, "fnorm"
+    );
+    if (!fnorm_part) {
+        ESP_LOGE("MAIN", "找不到 'fnorm' 分区！请检查 partitions.csv");
+        return;
+    }
+
+    const void *fnorm_mmap_base = nullptr;
+    spi_flash_mmap_handle_t fnorm_mmap_handle;
+    ESP_ERROR_CHECK(esp_partition_mmap(
+        fnorm_part, 0, fnorm_part->size, ESP_PARTITION_MMAP_DATA,
+        &fnorm_mmap_base, &fnorm_mmap_handle
+    ));
+
+    // 2. 暴力破解 MODL 文件头，定位到真实的 weight_pool 内存地址
+    const uint8_t* modl_ptr = (const uint8_t*)fnorm_mmap_base;
+    if (memcmp(modl_ptr, "MODL", 4) != 0) {
+        ESP_LOGE("MAIN", "fnorm 魔法字错误！这不是 pack_single_bin 生成的包！");
+    }
+
+    uint32_t entry_bytes_len = *(const uint32_t*)(modl_ptr + 8);
+    uint32_t name_pool_len = *(const uint32_t*)(modl_ptr + 12);
+    
+    // Header 总长度 = 20 + entries + names，还要补齐到 4 字节边界
+    uint32_t pool_offset = 20 + entry_bytes_len + name_pool_len;
+    uint32_t pad = (4 - (pool_offset % 4)) % 4;
+    pool_offset += pad;
+
+    // 3. 拿到纯净的 FP16 权重数组指针！这个就是待会儿传给 norm 的参数！
+    const uint16_t* final_norm_weight = (const uint16_t*)(modl_ptr + pool_offset);
+    ESP_LOGI("MAIN", "Final Norm Weight 挂载成功！");
+
     //for real
     char user_input[256];
     float* cur_token_vec = (float*)heap_caps_malloc(emb_mod.hidden_size * sizeof(float),MALLOC_CAP_SPIRAM);
     float* node_out_vec = (float*)heap_caps_malloc(emb_mod.hidden_size * sizeof(float),MALLOC_CAP_SPIRAM);
+    float* temp_final_out = (float*)heap_caps_malloc(emb_mod.hidden_size * sizeof(float),MALLOC_CAP_SPIRAM);
 
     char line[MAX_LINE_LEN];
     int pos = 0;
@@ -334,6 +390,11 @@ extern "C" void app_main(void)
                     }
                 } else {
                     TokenSeq prompt_token = bpe_encode(line);
+                    printf("\n[DEBUG PROMPT IDS]: ");
+                    for(int i = 0; i < prompt_token.length; i++) {
+                        printf("%d ", prompt_token.ids[i]);
+                    }
+                    printf("\n");
                     prompt_token_length = prompt_token.length;
                     if (prompt_token.length > 0) {
                         generated_tokens = 0;
@@ -362,7 +423,11 @@ extern "C" void app_main(void)
                         int next_token_id = -1;
 
                         for(int step = 0; step < MAX_GEN_LEN; ++step) {
-                            next_token_id = lm_head_sample(&emb_mod, node_out_vec, 0.0f);
+                            final_rms_norm(node_out_vec, temp_final_out, final_norm_weight, emb_mod.hidden_size);
+                            next_token_id = lm_head_sample(&emb_mod, temp_final_out, 0.7f);
+
+                            //printf("\n[DEBUG] pos=%lu | next_token_id=%d | out_vec[0-3]: %.4f, %.4f, %.4f, %.4f\n", 
+                            //current_pos, next_token_id, node_out_vec[0], node_out_vec[1], node_out_vec[2], node_out_vec[3]);
 
                             if(next_token_id == EOS_TOKEN_ID || next_token_id < 0 || next_token_id >= (int)s_header->vocab_size) {
                                 break;
@@ -381,6 +446,9 @@ extern "C" void app_main(void)
                                 ESP_LOGE(TAG, "pipeline forward fail at pos: %lu", current_pos);
                                 break;
                             }
+                            
+                            //printf("\n[DEBUG] pos=%lu | out_vec[0-3]: %.4f, %.4f, %.4f, %.4f\n", 
+                            //    current_pos, node_out_vec[0], node_out_vec[1], node_out_vec[2], node_out_vec[3]);
 
                             current_pos++;
                         }

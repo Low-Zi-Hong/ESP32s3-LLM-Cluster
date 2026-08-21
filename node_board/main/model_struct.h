@@ -16,6 +16,6 @@ struct TransformerLayer
     LayerWeights w_up;
     LayerWeights w_down;
 
-    const float* rms_norm_1_weight; // be4 attent
-    const float* rms_norm_2_weight; // be4 MLP
+    const uint16_t* rms_norm_1_weight; // be4 attent
+    const uint16_t* rms_norm_2_weight; // be4 MLP
 };

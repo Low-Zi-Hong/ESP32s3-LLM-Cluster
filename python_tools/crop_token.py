@@ -1,8 +1,8 @@
 import os
 import json
 
-BASE_DIR = "./Qwen2-0.5B"
-OUTPUT_DIR = "./cropped_model"
+BASE_DIR = "../Qwen2-0.5B"
+OUTPUT_DIR = "../cropped_Qwen"
 TARGET_VOCAB_SIZE = 32000
 REGULAR_VOCAB_SIZE = 31990
 

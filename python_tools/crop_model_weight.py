@@ -3,8 +3,8 @@ import json
 import torch
 from safetensors.torch import load_file, save_file
 
-input_safetensor = "./Qwen2-0.5B/model.safetensors"
-output_dir = "./cropped_model"
+input_safetensor = "../Qwen2-0.5B/model.safetensors"
+output_dir = "../cropped_Qwen"
 output_safetensor = os.path.join(output_dir, "model.safetensors")
 
 TARGET_VOCAB_SIZE = 32000

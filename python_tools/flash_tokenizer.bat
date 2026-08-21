@@ -1,0 +1,1 @@
+python -m esptool --chip esp32s3 --port COM8 --baud 460800 write_flash 0x90000 ../cropped_Qwen/tokenizer.bin

@@ -78,12 +78,10 @@ def pack_single_bin(tensor_dict, output_bin_path):
 
     print(f"  └─ 📦 生成: {os.path.basename(output_bin_path)} | 大小: {len(final_bin) / 1024:.2f} KB ({len(tensor_entries)} 个 Tensor)")
 
-
 def export_raw_layer_bin(layer_tensors, layer_idx):
     final_bin = bytearray()
     
-    def append_tensor(key_suffix, is_float=True, default_shape=None, default_val=0.0):
-        # 灵活匹配后缀
+    def append_tensor(key_suffix, target_dtype=None, default_shape=None, default_val=0.0):
         matched_key = None
         for k in layer_tensors.keys():
             if k.endswith(key_suffix):
@@ -91,72 +89,68 @@ def export_raw_layer_bin(layer_tensors, layer_idx):
                 break
         
         if not matched_key:
-            # 如果是 RMSNorm 找不到（被融合了），直接跳过，不写入任何数据！
-            if "layernorm" in key_suffix:
-                return 
-            # 如果是 K 和 V 没有 Bias（某些架构里 K/V 不带 bias），用 0.0 占位
-            elif "bias" in key_suffix:
-                dim = 128 if ("k_proj" in key_suffix or "v_proj" in key_suffix) else 896
-                final_bin.extend(torch.zeros(dim, dtype=torch.float32).numpy().tobytes())
-                return
-            else:
-                raise KeyError(f"❌ 找不到关键权重后缀: {key_suffix} ...")
+            # ⚠️ 致命修复：如果找不到权重，必须严格按照指定的类型和尺寸填入占位符字节！
+            # 绝对不能直接 return，否则 C++ 指针会读进异次元！
+            if target_dtype is not None and default_shape is not None:
+                pad_tensor = torch.full((default_shape,), default_val, dtype=target_dtype)
+                final_bin.extend(pad_tensor.numpy().tobytes())
+            return
 
         tensor = layer_tensors[matched_key]
         
-        if is_float:
-            # 强转为 C++ 兼容的 32-bit 标准浮点数
-            tensor = tensor.to(torch.float32)
+        if target_dtype is not None:
+            # 严格按照 C++ 的胃口，强转为 FP16 或 FP32
+            tensor = tensor.to(target_dtype)
         
         final_bin.extend(tensor.numpy().tobytes())
 
     # =================================================================
-    # 严格按照 C++ 代码里的挂载顺序拼接 Bytes！
-    # 适配了 weight_packed 和 gamma 的新命名，缺失的 Norm 用 1.0 补全
+    # 严格按照 C++ advance() 的字节数写入！错一个 byte 都会死锁！
     # =================================================================
     
-    # 1. Attention 前的 RMSNorm (如果缺失，用 896 维的 1.0 占位)
-    append_tensor("input_layernorm.weight", is_float=True, default_shape=896, default_val=1.0)
+    # 1. Attention 前的 RMSNorm (C++ advance: 896 * 2) -> 必须是 FP16!
+    append_tensor("input_layernorm.weight", target_dtype=torch.float16, default_shape=896, default_val=1.0)
     
     # 2. Q proj
-    append_tensor("self_attn.q_proj.weight_packed", is_float=False) 
-    append_tensor("self_attn.q_proj.gamma", is_float=True)
-    append_tensor("self_attn.q_proj.bias", is_float=True, default_shape=896, default_val=0.0)
+    append_tensor("self_attn.q_proj.weight_packed", target_dtype=None) 
+    append_tensor("self_attn.q_proj.gamma", target_dtype=torch.float32) # C++ sizeof(float)
+    append_tensor("self_attn.q_proj.bias", target_dtype=torch.float32, default_shape=896, default_val=0.0)
     
     # 3. K proj (GQA 维度 128)
-    append_tensor("self_attn.k_proj.weight_packed", is_float=False)
-    append_tensor("self_attn.k_proj.gamma", is_float=True)
-    append_tensor("self_attn.k_proj.bias", is_float=True, default_shape=128, default_val=0.0)
+    append_tensor("self_attn.k_proj.weight_packed", target_dtype=None)
+    append_tensor("self_attn.k_proj.gamma", target_dtype=torch.float32)
+    append_tensor("self_attn.k_proj.bias", target_dtype=torch.float32, default_shape=128, default_val=0.0)
     
     # 4. V proj (GQA 维度 128)
-    append_tensor("self_attn.v_proj.weight_packed", is_float=False)
-    append_tensor("self_attn.v_proj.gamma", is_float=True)
-    append_tensor("self_attn.v_proj.bias", is_float=True, default_shape=128, default_val=0.0)
+    append_tensor("self_attn.v_proj.weight_packed", target_dtype=None)
+    append_tensor("self_attn.v_proj.gamma", target_dtype=torch.float32)
+    append_tensor("self_attn.v_proj.bias", target_dtype=torch.float32, default_shape=128, default_val=0.0)
     
     # 5. O proj
-    append_tensor("self_attn.o_proj.weight_packed", is_float=False)
-    append_tensor("self_attn.o_proj.gamma", is_float=True)
+    append_tensor("self_attn.o_proj.weight_packed", target_dtype=None)
+    append_tensor("self_attn.o_proj.gamma", target_dtype=torch.float32)
+    # C++ 里 O_proj bias 是 nullptr，所以这里不写 bias!
     
-    # 6. MLP 前的 RMSNorm (如果缺失，用 896 维的 1.0 占位)
-    append_tensor("post_attention_layernorm.weight", is_float=True, default_shape=896, default_val=1.0)
+    # 6. MLP 前的 RMSNorm (C++ advance: 896 * 2) -> 必须是 FP16!
+    append_tensor("post_attention_layernorm.weight", target_dtype=torch.float16, default_shape=896, default_val=1.0)
     
     # 7. Gate proj
-    append_tensor("mlp.gate_proj.weight_packed", is_float=False)
-    append_tensor("mlp.gate_proj.gamma", is_float=True)
+    append_tensor("mlp.gate_proj.weight_packed", target_dtype=None)
+    append_tensor("mlp.gate_proj.gamma", target_dtype=torch.float32)
     
     # 8. Up proj
-    append_tensor("mlp.up_proj.weight_packed", is_float=False)
-    append_tensor("mlp.up_proj.gamma", is_float=True)
+    append_tensor("mlp.up_proj.weight_packed", target_dtype=None)
+    append_tensor("mlp.up_proj.gamma", target_dtype=torch.float32)
     
     # 9. Down proj
-    append_tensor("mlp.down_proj.weight_packed", is_float=False)
-    append_tensor("mlp.down_proj.gamma", is_float=True)
+    append_tensor("mlp.down_proj.weight_packed", target_dtype=None)
+    append_tensor("mlp.down_proj.gamma", target_dtype=torch.float32)
 
     return final_bin
-
+    
 def split_and_pack_safetensors(
-    safetensors_path="./cropped_model/model158_bit4.safetensors",
-    output_dir="./cropped_model/bins",
+    safetensors_path="../cropped_Qwen/qwen_158_int4.safetensors",
+    output_dir="../cropped_Qwen/bins",
     layers_per_bin=4
 ):
     os.makedirs(output_dir, exist_ok=True)

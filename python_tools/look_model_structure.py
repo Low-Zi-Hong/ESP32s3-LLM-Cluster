@@ -37,5 +37,5 @@ def inspect_safetensors_structure(file_path):
             print("-" * 50)
 
 if __name__ == "__main__":
-    safetensors_path = "./cropped_model/model158_bit4.safetensors"
+    safetensors_path = "../cropped_Qwen/qwen_158.safetensors"
     inspect_safetensors_structure(safetensors_path)

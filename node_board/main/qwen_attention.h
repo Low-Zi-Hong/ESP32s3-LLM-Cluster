@@ -10,7 +10,7 @@
 
 esp_err_t init_transformer_layer(TransformerLayer* layers, int num_layers);
 
-void rms_norm(const float* input, const float* weight, float* output, int dim);
+void rms_norm(const float* input, const uint16_t* weight, float* output, int dim);
 
 void apply_rope(float* vec, int num_heads, int head_dim, int current_pos);
 

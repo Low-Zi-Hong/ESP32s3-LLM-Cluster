@@ -5,19 +5,26 @@ from safetensors import safe_open
 def unpack_158bit(packed_weight, gamma):
     """
     将 2-bit 压缩的 uint8 矩阵解包回 FP16 的 -1, 0, 1，并乘上 gamma
+    编码: 0→0, 1→+1, 2→-1
+    顺序: 低2位是第0个数，高2位是第3个数 (对应 pack_multiplier = [1,4,16,64])
     """
     out_features, packed_in_features = packed_weight.shape
-    
-    # 提取四个位置的 2-bit 数据并减去 1 (恢复为 -1, 0, 1)
-    w0 = ((packed_weight >> 6) & 0b11).to(torch.int8) - 1
-    w1 = ((packed_weight >> 4) & 0b11).to(torch.int8) - 1
-    w2 = ((packed_weight >> 2) & 0b11).to(torch.int8) - 1
-    w3 = ((packed_weight) & 0b11).to(torch.int8) - 1
-    
-    # 交织拼接，恢复原始维度 [out_features, in_features]
+
+    def decode(bits):
+        # bits: uint8 tensor, values in {0,1,2,3}
+        val = torch.zeros_like(bits, dtype=torch.int8)
+        val[bits == 1] = 1
+        val[bits == 2] = -1
+        # bits == 0 保持 0，bits == 3 理论不该出现，也保持 0
+        return val
+
+    w0 = decode((packed_weight)       & 0b11)   # 低位 = 第0个数
+    w1 = decode((packed_weight >> 2)  & 0b11)
+    w2 = decode((packed_weight >> 4)  & 0b11)
+    w3 = decode((packed_weight >> 6)  & 0b11)   # 高位 = 第3个数
+
     unpacked_ternary = torch.stack([w0, w1, w2, w3], dim=-1).view(out_features, -1).to(torch.float16)
-    
-    # 乘上该层的缩放系数
+
     return unpacked_ternary * gamma.to(torch.float16)
 
 def unpack_4bit_emb(packed_weight, scales):
@@ -37,8 +44,8 @@ def unpack_4bit_emb(packed_weight, scales):
     return unpacked_q * scales.to(torch.float16)
 
 def load_and_generate(
-    original_model_path="./cropped_model",
-    safetensors_path="./cropped_model/model158_bit4.safetensors"
+    original_model_path="../cropped_Qwen",
+    safetensors_path="../cropped_Qwen/qwen_158_int4.safetensors"
 ):
     print("⏳ 正在加载原始架构...")
     # 先加载原始的空壳架构
@@ -102,16 +109,17 @@ def load_and_generate(
     model.eval()
     
     # 测试 Prompt
-    prompt = "Hello, what is the meaning of life?"
+    prompt = "A"
     inputs = tokenizer(prompt, return_tensors="pt").to(device)
     
     with torch.no_grad():
         outputs = model.generate(
             **inputs, 
-            max_new_tokens=30, # 先生成 30 个词看看情况
-            temperature=0.7, 
-            do_sample=True,
-            repetition_penalty=1.2 # 极度压缩的模型容易结巴，加点惩罚
+            max_new_tokens=30, 
+            do_sample=False,        # 关闭采样，使用严格的 Argmax
+            temperature=None,       # 贪心搜索不需要 temperature
+            top_p=None              # 关闭 Top-P
+            # 移除 repetition_penalty
         )
     
     response = tokenizer.decode(outputs[0], skip_special_tokens=True)
