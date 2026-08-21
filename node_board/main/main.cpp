@@ -11,6 +11,9 @@
 #include "driver/gpio.h"
 #include "rom/ets_sys.h"
 
+//LUT table
+#include "lut_table.h"
+
 #define NUM_LAYERS_PER_NODE 4
 
 static const char* TAG = "NODE_MAIN";

@@ -46,8 +46,8 @@ int lm_head_sample(const EmbeddingModule* emb_mod, const float* x_final, float t
             int8_t w1 = (int8_t)((val>> 4) & 0x0F);
             if (w1 & 0x08) w1 |= 0xF0;
 
-            acc += x_final[h] + (float)w0;
-            acc += x_final[h+1] + (float)w1;
+            acc += x_final[h] * (float)w0;
+            acc += x_final[h+1] * (float)w1;
 
             h+=2;            
         }
