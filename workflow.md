@@ -36,6 +36,24 @@
 
 * I have other .py file which work as tools to spy the model and check the model file. Their usage can refer the py file itself and ask GPT if possible lol.
 
+# Model Specifications
+
+| Parameter | Value | Description / Note |
+| :--- | :--- | :--- |
+| **Base Architecture** | Qwen2-0.5B (Transformer Decoder) | Pruned & Quantized for MCU cluster |
+| **Total Layers** | 24 Layers | Distributed as 4 layers per Compute Node (6 nodes) |
+| **Hidden Size ($d_{model}$)** | 896 | Native Qwen2-0.5B hidden dimension |
+| **Intermediate Size** | 4,864 | SwiGLU MLP intermediate dimension |
+| **Attention Heads** | 14 Q-Heads / 2 KV-Heads (GQA) | Grouped-Query Attention with $d_{head}=64$ |
+| **KV Dimension** | 128 | $2 \times 64$ per token step |
+| **Vocabulary Size** | 32,000 (32K) | Cropped from original 151K BPE vocab |
+| **Quantization Precision** | **1.58-bit (Ternary)** + **INT4** | BitNet $\{-1, 0, 1\}$ linear layers + INT4 Embeddings |
+| **Weight Packing** | 4 ternary weights / byte (2-bit packed) | CPU/MCU 4-byte aligned SIMD layout |
+| **Layer Memory Footprint** | ~3.82 MB / Layer | Packed ternary weights + FP16 scales & Norm |
+| **Node Flash Allocation** | ~15.3 MB / Node (4 Layers) | Fits within 16MB SPI Flash partition |
+| **Master Flash Allocation** | ~14.0 MB (INT4 Embed) + 64 KB (Final Norm) | Flash memory map on Master Node |
+| **Context Window** | 512 Tokens | Dynamic KV Cache in Node PSRAM |
+
 # Wiring Things Up
 
 =============================================================================
