@@ -133,3 +133,11 @@
 # Scaling Up
 
 - This project makes it possible to scale up. It can possibly run any model size just that u need more ESP32. Each ESP32s3 able to run 4 layers, if u have 6 then it is 24 layers. if u have 100 of them then it will be 400 layers of model. Just that the time of inference will linearly growth while u scale up. Currently each node spent 1.3s to inference.
+
+
+# Troubleshooting
+
+- **Output is stuck repeating the same word/token no matter the input**: this is a known behavior of a heavily under-trained or overfit-on-a-single-sentence model combined with greedy (argmax) sampling. It's not necessarily a code bug — try feeding it a prompt that exactly matches your training text and see if it reproduces it. If even that fails, check the ternary encoding consistency (see `qat_158.py` note above) before digging into hardware/SPI issues.
+- **Output looks blank / nothing prints but the board is clearly still computing**: check for a vocab gap (see `crop_token.py` note above) before assuming the SPI pipeline or tokenizer is broken.
+- **Model output is complete garbage regardless of prompt, even right after boot**: double-check every compute node was flashed with the correct layer range in the correct physical daisy-chain position.
+- **Cannot flash esp32s3**: double check the rst pin, be sure the rst pin is floating before flashing.
