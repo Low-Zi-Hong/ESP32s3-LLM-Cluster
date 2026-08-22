@@ -8,6 +8,7 @@ A distributed pipeline inference engine on multiple ESP32S3 running 1.58-bit (Bi
 
 This project runs a sliced 0.5B LLM across a cluster of 7 ESP32s3. One act as master and others are node. The master node runs the tokenizer and embeding and the other attention layer and MLP ran on the nodes. The master and node communicate through high speed SPI Daisy-Chain.
 
+```text
 ┌─────────────────────────────────────────────────────────┐
 │                     MASTER NODE                         │
 │                                                         │
@@ -60,6 +61,7 @@ This project runs a sliced 0.5B LLM across a cluster of 7 ESP32s3. One act as ma
 │                       │                                 │
 │  [ Output ] <--- Next Token ID                          │
 └─────────────────────────────────────────────────────────┘
+```
 
 ## Getting Started
 
@@ -67,6 +69,7 @@ pls refer [workflow guide](workflow.md) to start with the project.
 
 ## Project Structure
 
+```text
 .
 ├── README.md                   # Project documentation
 ├── workflow.md                 # Step-by-step flashing, model prep & wiring guide
@@ -104,6 +107,7 @@ pls refer [workflow guide](workflow.md) to start with the project.
     ├── pack_model_bin.py       # Packs 1.58-bit layer chunks for physical alignment
     ├── look_model_structure.py # Debug tool for inspecting .safetensors
     └── flash_*.bat             # Multi-threaded fast flashing scripts
+```
 
 ## License
 
