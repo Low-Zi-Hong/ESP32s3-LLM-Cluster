@@ -5,33 +5,38 @@
   - This will create partition which is important for the next step.
   - Important notes: pls remove the rst pin and leave it disconnected/floating out before flashing. 
 
-[[crop_token.py]]
+[crop_token.py]
 - crop the tokenizer to 32K tokens
   - Note that 32K token is the maximum size of ESP32s3 can handle, larger than this will need more than 16MB of flash. If possible you can split the embeded matric to 2 equivalent matric and use 2 ESP32S3 to run it.
 
-[[crop_model_weight.py]]
+[crop_model_weight.py]
 - crop the embed to fit 32K tokens
   
-[[update_config.py]]
+[update_config.py]
 - update the config.json of the new quantized model
 
-[[qat_158.py]]
+[qat_158.py]
 - train the model to quantize to bit1.58
-- Disclaimer: This script just partially train, the loss will hit somekind of 8.0. It will be just spitting out random tokens.. This can be verify through the [[run_model158.py]] script. If u have a stronger computer, just edit the script and train the model again. thanks :D
+- Disclaimer: This script just partially train, the loss will hit somekind of 8.0. It will be just spitting out random tokens.. This can be verify through the [run_model158.py] script. If u have a stronger computer, just edit the script and train the model again. thanks :D
+- Encoding consistency warning: the 2-bit ternary packing order/mapping in qat_158.py (Python) MUST exactly match the unpacking logic in bitlinear.cpp/lut_table.cpp (C/ASM) and run_model158.py (verification). A mismatch here won't crash anything — it'll silently corrupt every weight and produce degenerate/repetitive output, which is very hard to debug from symptoms alone.
 
-[[bit4_embedding.py]]
+[bit4_embedding.py]
 - pack the embedding layer to bit4 quantize
 
-[[pack_tokenizer_bin.py]]
+[pack_tokenizer_bin.py]
 - pack the tokenizer to .bin file to flash to esp32
 
-[[pack_model_bin.py]]
+[pack_model_bin.py]
 - pack the model to .bin file to flash to different esp32
 
-- use [[flash_embed.bat]] and [[flash_tokenizer]] to flash the tokenizer and embed to master node
-- use [[flash_layers.bat]] to flash the layers to respective esp32s3. Do manually change the COMX to ur COM and the layers to each and every esp node.
-  - Posible to use the Device Manager on windows to check and keep tracking of the COM port.
-  - The flashing process will take some time... pls be patient lol depends on your model size.
+- Use [flash_embed.bat] and [flash_tokenizer.bat] to flash the tokenizer and embedding to the **master** node.
+- Use [flash_layers.bat] to flash each of the 6 layer `.bin` files (`layers_0_to_3.bin`, `layers_4_to_7.bin`, ... `layers_20_to_23.bin`) to their respective compute nodes.
+  - Open `flash_layers.bat` in a text editor. For **each** node, update two things before running:
+    1. `COMX` → the COM port of the board you're currently flashing (check via Windows Device Manager)
+    2. The `.bin` filename → the layer range that specific physical board is responsible for
+  - **The order matters**: the physical position of each board in the SPI daisy-chain must match the layer range you flash to it (Node 1 = layers 0-3, Node 2 = layers 4-7, ... Node 6 = layers 20-23). Flashing the wrong layer range to a board won't throw an error — it will silently produce garbage output that's very hard to debug.
+  - You can use Windows Device Manager to identify and keep track of each board's COM port.
+  - Flashing takes a while — larger models mean larger `.bin` files, so be patient.
 
 
 * I have other .py file which work as tools to spy the model and check the model file. Their usage can refer the py file itself and ask GPT if possible lol.
