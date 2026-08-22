@@ -56,6 +56,8 @@
 
 # Wiring Things Up
 
+```text
+
 =============================================================================
                           ⚡ COMMON GROUND (GND) ⚡
              (CRITICAL: All boards MUST share the same GND pin!)
@@ -85,6 +87,8 @@
 [ 3. STATUS INDICATOR ]
                             GPIO 8 -----------------> Status LED
                                                       GPIO 8 ---> LED
+
+```
 
 - This project use Serial Peripheral Interface (SPI) communicate between ESP and wire things up.
   - Each node consist 2 channel of SPI one master and one slave. Below are the default value:
