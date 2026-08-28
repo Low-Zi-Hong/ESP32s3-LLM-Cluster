@@ -61,7 +61,7 @@ bitlinear_forward_q_asm:
 .L_dot_end:
     # Reduction
     movi     a2, 0
-    ee.srs.accx a2, a7, 0
+    ee.srs.accx a2, a2, 0
     
     retw
     .size bitlinear_forward_q_asm, . - bitlinear_forward_q_asm
