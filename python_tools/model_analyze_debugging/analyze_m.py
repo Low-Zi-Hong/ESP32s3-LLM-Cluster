@@ -44,8 +44,8 @@ def unpack_4bit_emb(packed_weight, scales):
     return unpacked_q * scales.to(torch.float16)
 
 def load_and_generate(
-    original_model_path="../cropped_Qwen",
-    safetensors_path="../cropped_Qwen/qwen_158.safetensors"
+    original_model_path="../../cropped_Qwen",
+    safetensors_path="../../cropped_Qwen/qwen_158_int4.safetensors"
 ):
     print("⏳ 正在加载原始架构...")
     # 先加载原始的空壳架构
@@ -103,29 +103,42 @@ def load_and_generate(
     print("🚀 解包完成！模型准备就绪，开启全损测试...\n")
     print("="*50)
     
-    # 将模型放入 GPU 加速推理 (如果有的话)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    model.to(device)
-    model.eval()
-    
-    # 测试 Prompt
-    prompt = "in "
-    inputs = tokenizer(prompt, return_tensors="pt").to(device)
-    
-    with torch.no_grad():
-        outputs = model.generate(
-            **inputs, 
-            max_new_tokens=30, 
-            do_sample=False,        # 关闭采样，使用严格的 Argmax
-            temperature=None,       # 贪心搜索不需要 temperature
-            top_p=None              # 关闭 Top-P
-            # 移除 repetition_penalty
-        )
-    
-    response = tokenizer.decode(outputs[0], skip_special_tokens=True)
-    print(f"用户: {prompt}")
-    print(f"全损模型: {response}")
-    print("="*50)
+
+# 过滤出所有属于 model.layers.0 的参数
+    layer0_params = {
+        name: param for name, param in model.named_parameters() 
+        if "model.layers.2." in name
+    }
+
+    if not layer0_params:
+        print("❌ 未找到 'model.layers.0'，请确认层级命名或模型配置。")
+        return
+
+    for name, param in layer0_params.items():
+        # 去掉前缀，让输出更整洁
+        short_name = name.replace("model.layers.0.", "")
+        
+        # 展平并提取前 10 个数值，转为 float 显示
+        flattened = param.data.view(-1)
+        preview_vals = [round(float(v), 5) for v in flattened[:10]]
+        
+        # 判断当前层是否为三值量化层，顺便展示三值化后的离散值
+        is_bitnet = any(k in name for k in ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"])
+        
+        print(f"\n📌 子模块: {short_name}")
+        print(f"   Shape: {list(param.shape)} | Dtype: {param.dtype}")
+        print(f"   原始连续权重 (前10): {preview_vals}")
+        
+        if is_bitnet and "weight" in name:
+            gamma = param.data.abs().mean()
+            ternary = torch.clamp(torch.round(param.data / (gamma + 1e-8)), -1.0, 1.0).view(-1)[:10]
+            print(f"   量化 Scale (Gamma): {float(gamma):.6f}")
+            print(f"   三值映射值 {{-1, 0, 1}} (前10): {[int(v) for v in ternary]}")
+
+    print("\n" + "=" * 60)
+    print("✅ Layer 0 参数提取完成。")
+
+
 
 if __name__ == "__main__":
     load_and_generate()

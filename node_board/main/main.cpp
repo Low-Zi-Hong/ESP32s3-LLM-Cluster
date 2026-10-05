@@ -11,6 +11,9 @@
 #include "driver/gpio.h"
 #include "rom/ets_sys.h"
 
+//debug
+#include "debug.h"
+
 //LUT table
 #include "lut_table.h"
 
@@ -100,6 +103,9 @@ extern "C" void app_main(void)
         return;
     }
     init_runtime_buffers();
+
+    //for debug purpose
+    verify_layer_parameters(&s_my_layers[2],2);
 
     if (spi_bus_init_node() != ESP_OK) return;
     

@@ -82,27 +82,26 @@ def export_raw_layer_bin(layer_tensors, layer_idx):
     final_bin = bytearray()
     
     def append_tensor(key_suffix, target_dtype=None, default_shape=None, default_val=0.0):
-        matched_key = None
-        for k in layer_tensors.keys():
-            if k.endswith(key_suffix):
-                matched_key = k
-                break
-        
-        if not matched_key:
-            # ⚠️ 致命修复：如果找不到权重，必须严格按照指定的类型和尺寸填入占位符字节！
-            # 绝对不能直接 return，否则 C++ 指针会读进异次元！
-            if target_dtype is not None and default_shape is not None:
-                pad_tensor = torch.full((default_shape,), default_val, dtype=target_dtype)
-                final_bin.extend(pad_tensor.numpy().tobytes())
-            return
+            matched_key = None
+            # 必须强制包含当前层的标识: f"layers.{layer_idx}."
+            layer_tag = f"layers.{layer_idx}."
+            for k in layer_tensors.keys():
+                if layer_tag in k and k.endswith(key_suffix):
+                    matched_key = k
+                    break
+            
+            if not matched_key:
+                if target_dtype is not None and default_shape is not None:
+                    pad_tensor = torch.full((default_shape,), default_val, dtype=target_dtype)
+                    final_bin.extend(pad_tensor.numpy().tobytes())
+                return
 
-        tensor = layer_tensors[matched_key]
-        
-        if target_dtype is not None:
-            # 严格按照 C++ 的胃口，强转为 FP16 或 FP32
-            tensor = tensor.to(target_dtype)
-        
-        final_bin.extend(tensor.numpy().tobytes())
+            tensor = layer_tensors[matched_key]
+            
+            if target_dtype is not None:
+                tensor = tensor.to(target_dtype)
+            
+            final_bin.extend(tensor.numpy().tobytes())
 
     # =================================================================
     # 严格按照 C++ advance() 的字节数写入！错一个 byte 都会死锁！

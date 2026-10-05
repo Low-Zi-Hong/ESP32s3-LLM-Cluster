@@ -11,9 +11,6 @@
 
 [crop_model_weight.py]
 - crop the embed to fit 32K tokens
-  
-[update_config.py]
-- update the config.json of the new quantized model
 
 [qat_158.py]
 - train the model to quantize to bit1.58

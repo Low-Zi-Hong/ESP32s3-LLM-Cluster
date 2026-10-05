@@ -71,6 +71,8 @@ esp_err_t init_transformer_layer(TransformerLayer* layers, int num_layers) {
 
     for (int l = 0; l < num_layers; l++) {
         ESP_LOGI(TAG, "mapping %d 层...", l);
+        //ESP_LOGI(TAG, "mapping %d 层... 写入的目标结构体地址: %p, 当前权重 ptr: %p", 
+        //         l, &layers[l], ptr);
 
         layers[l].rms_norm_1_weight = (const uint16_t*)advance(QWEN_HIDDEN_SIZE * 2);
         
@@ -120,6 +122,7 @@ esp_err_t init_transformer_layer(TransformerLayer* layers, int num_layers) {
     }
 
     ESP_LOGI(TAG, "Single layer success: %d Bytes", (int)(ptr - (const uint8_t*)mmap_base));
+
     return ESP_OK;
 }
 
