@@ -424,7 +424,7 @@ extern "C" void app_main(void)
 
                         for(int step = 0; step < MAX_GEN_LEN; ++step) {
                             final_rms_norm(node_out_vec, temp_final_out, final_norm_weight, emb_mod.hidden_size);
-                            next_token_id = lm_head_sample(&emb_mod, temp_final_out, 0.7f);
+                            next_token_id = lm_head_sample(&emb_mod, temp_final_out, 0.0f);
 
                             //printf("\n[DEBUG] pos=%lu | next_token_id=%d | out_vec[0-3]: %.4f, %.4f, %.4f, %.4f\n", 
                             //current_pos, next_token_id, node_out_vec[0], node_out_vec[1], node_out_vec[2], node_out_vec[3]);

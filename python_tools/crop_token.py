@@ -91,3 +91,19 @@ if os.path.exists(tok_cfg_path):
         json.dump(tok_cfg, f, ensure_ascii=False, indent=2)
 
 print("✅ Tokenizer 重新生成成功！")
+
+src_config_path = "../Qwen2-0.5B/config.json"
+dst_config_path = "../cropped_Qwen/config.json"  # 如果想另存为其他路径可以改成例如 ./config_esp32.json
+
+# 1. 读取原版 config
+with open(src_config_path, "r", encoding="utf-8") as f:
+    config = json.load(f)
+
+# 2. 替换词表大小及相关特殊 token id
+config["vocab_size"] = 32000
+config["bos_token_id"] = 31997
+config["eos_token_id"] = 31997
+
+# 3. 格式化写回
+with open(dst_config_path, "w", encoding="utf-8") as f:
+    json.dump(config, f, indent=2, ensure_ascii=False)
